@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GD Bitmap Font Generator</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#111827;color:#e5e7eb}
+header{padding:16px 20px;background:#1f2937;border-bottom:1px solid #374151;position:sticky;top:0;z-index:5}
+h1{margin:0;font-size:20px} header small{color:#9ca3af}
+main{display:grid;grid-template-columns:360px 1fr;min-height:calc(100vh - 70px)}
+aside{padding:16px;border-right:1px solid #374151;background:#111827;overflow:auto}
+section{margin-bottom:18px}label{display:block;font-size:13px;color:#9ca3af;margin:8px 0 5px}
+input,textarea,button,select{font:inherit}input[type=text],input[type=number],textarea,select{width:100%;background:#0b1220;border:1px solid #374151;border-radius:7px;color:#fff;padding:8px}
+textarea{min-height:100px;resize:vertical;font-family:monospace}
+button{border:0;border-radius:7px;padding:9px 12px;background:#2563eb;color:#fff;cursor:pointer;margin:3px 2px}
+button:hover{filter:brightness(1.12)}button.secondary{background:#374151}button.good{background:#059669}
+button.warn{background:#b45309}.row{display:flex;gap:6px;align-items:center}.row>*{flex:1}
+.help{font-size:12px;color:#9ca3af;line-height:1.4}.status{padding:8px;border-radius:7px;background:#0b1220;color:#93c5fd;font-size:12px;white-space:pre-wrap}
+#work{padding:16px;min-width:0}.toolbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:10px}
+#canvasWrap{background:#030712;border:1px solid #374151;border-radius:8px;overflow:auto;height:calc(100vh - 150px);position:relative}
+canvas{display:block;cursor:crosshair;image-rendering:auto}
+.badge{font-size:12px;background:#374151;padding:3px 7px;border-radius:999px}
+#glyphList{max-height:220px;overflow:auto;border:1px solid #374151;border-radius:7px}
+.glyph{display:flex;justify-content:space-between;padding:6px 8px;border-bottom:1px solid #1f2937;font-family:monospace;font-size:12px}
+.glyph:last-child{border:0}.danger{color:#fca5a5}.ok{color:#86efac}
+</style>
+</head>
+<body>
+<header>
+  <h1>GD Bitmap Font Generator</h1>
+  <small>Geometry Dash / BMFont-style atlas generator — PNG + .fnt</small>
+</header>
+<main>
+<aside>
+<section>
+  <label>Bitmap PNG</label>
+  <input id="png" type="file" accept="image/png,image/*">
+  <div class="help">Load your character sheet. Drag rectangles around each glyph on the canvas.</div>
+</section>
+
+<section>
+  <label>Optional existing .fnt</label>
+  <input id="fnt" type="file" accept=".fnt,text/plain">
+  <div class="help">If supplied, existing kerning pairs are preserved when possible.</div>
+</section>
+
+<section>
+  <label>Character sequence</label>
+  <textarea id="chars"> !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~</textarea>
+  <div class="help">The first character is assigned to the first box, the second to the second box, etc. You can edit this to match your PNG.</div>
+</section>
+
+<section>
+  <label>Selection / font metrics</label>
+  <div class="row">
+    <div><label>Font size</label><input id="size" type="number" value="64"></div>
+    <div><label>Line height</label><input id="lineHeight" type="number" value="67"></div>
+  </div>
+  <div class="row">
+    <div><label>Base</label><input id="base" type="number" value="39"></div>
+    <div><label>Padding</label><input id="padding" type="text" value="0,0,0,0"></div>
+  </div>
+  <label>Font face</label><input id="face" type="text" value="Pusab">
+  <label>Output atlas</label>
+  <div class="row">
+    <div><label>Width</label><input id="outW" type="number" value="1024"></div>
+    <div><label>Height</label><input id="outH" type="number" value="1024"></div>
+  </div>
+</section>
+
+<section>
+  <button id="clear" class="secondary">Clear boxes</button>
+  <button id="undo" class="secondary">Undo</button>
+  <button id="auto" class="warn">Auto-detect</button>
+  <button id="map" class="secondary">Apply character map</button>
+</section>
+
+<section>
+  <button id="generate" class="good" style="width:100%">Generate PNG + FNT</button>
+</section>
+
+<section>
+  <div class="status" id="status">Load a PNG to begin.</div>
+</section>
+
+<section>
+  <b style="font-size:13px">Glyph boxes</b>
+  <div id="glyphList"></div>
+</section>
+</aside>
+
+<div id="work">
+  <div class="toolbar">
+    <span class="badge" id="zoomLabel">100%</span>
+    <button id="zoomOut" class="secondary">−</button>
+    <button id="zoomIn" class="secondary">+</button>
+    <button id="fit" class="secondary">Fit</button>
+    <span class="help">Drag on the image to create a glyph box. Boxes are assigned in order.</span>
+  </div>
+  <div id="canvasWrap"><canvas id="cv"></canvas></div>
+</div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const cv=$('cv'), ctx=cv.getContext('2d');
+let img=null, zoom=1, boxes=[], start=null, current=null, oldFnt='';
+let undoStack=[];
+
+function status(s){$('status').textContent=s}
+function redraw(){
+  if(!img)return;
+  cv.width=img.naturalWidth*zoom; cv.height=img.naturalHeight*zoom;
+  ctx.imageSmoothingEnabled=false; ctx.drawImage(img,0,0,cv.width,cv.height);
+  ctx.lineWidth=2;
+  boxes.forEach((b,i)=>{
+    ctx.strokeStyle='#22c55e'; ctx.strokeRect(b.x*zoom,b.y*zoom,b.w*zoom,b.h*zoom);
+    ctx.fillStyle='rgba(0,0,0,.72)';ctx.fillRect(b.x*zoom,b.y*zoom,Math.max(20,26*zoom),20);
+    ctx.fillStyle='#fff';ctx.font='12px monospace';
+    let ch=(b.ch||'?').replace(/ /g,'␠');ctx.fillText((i+1)+':'+ch,b.x*zoom+3,b.y*zoom+14);
+  });
+  if(current){ctx.strokeStyle='#f59e0b';ctx.strokeRect(current.x*zoom,current.y*zoom,current.w*zoom,current.h*zoom)}
+  $('zoomLabel').textContent=Math.round(zoom*100)+'%'; renderList();
+}
+function renderList(){
+  $('glyphList').innerHTML=boxes.map((b,i)=>
+    `<div class="glyph"><span>${i+1}. ${escapeHtml(b.ch||'?')}</span><span>${b.w}×${b.h} @ ${b.x},${b.y}</span></div>`).join('');
+}
+function escapeHtml(s){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function fit(){
+  if(!img)return;
+  const r=$('canvasWrap').getBoundingClientRect();
+  zoom=Math.min((r.width-20)/img.naturalWidth,(r.height-20)/img.naturalHeight,1);
+  redraw();
+}
+$('png').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  const u=URL.createObjectURL(f); img=new Image();
+  img.onload=()=>{zoom=1;boxes=[];undoStack=[];fit();status(`Loaded ${img.naturalWidth}×${img.naturalHeight} PNG.`)};
+  img.src=u;
+};
+function pos(e){
+  const r=cv.getBoundingClientRect();
+  return {x:Math.max(0,Math.round((e.clientX-r.left)/zoom)),y:Math.max(0,Math.round((e.clientY-r.top)/zoom))};
+}
+cv.addEventListener('pointerdown',e=>{
+  if(!img)return; cv.setPointerCapture(e.pointerId); start=pos(e); current={x:start.x,y:start.y,w:0,h:0}; redraw();
+});
+cv.addEventListener('pointermove',e=>{
+  if(!start)return;let p=pos(e);
+  current={x:Math.min(start.x,p.x),y:Math.min(start.y,p.y),w:Math.abs(p.x-start.x),h:Math.abs(p.y-start.y)};redraw();
+});
+cv.addEventListener('pointerup',e=>{
+  if(!start)return;
+  let b=current;start=null;current=null;
+  if(b.w>=2&&b.h>=2){undoStack.push(JSON.stringify(boxes));boxes.push(b);applyMap(false);redraw()}
+});
+$('undo').onclick=()=>{if(undoStack.length)boxes=JSON.parse(undoStack.pop());else boxes.pop();applyMap(false);redraw()};
+$('clear').onclick=()=>{undoStack.push(JSON.stringify(boxes));boxes=[];redraw()};
+$('zoomIn').onclick=()=>{zoom=Math.min(4,zoom*1.25);redraw()};
+$('zoomOut').onclick=()=>{zoom=Math.max(.1,zoom/1.25);redraw()};
+$('fit').onclick=fit;
+
+function codePoints(s){return Array.from(s)}
+function applyMap(show=true){
+  const chars=codePoints($('chars').value);
+  boxes.forEach((b,i)=>b.ch=chars[i]||'?');
+  if(show)status(`Mapped ${Math.min(chars.length,boxes.length)} characters to ${boxes.length} boxes.`);
+  redraw();
+}
+$('map').onclick=()=>applyMap(true);
+
+function autoDetect(){
+  if(!img)return;
+  // Detect horizontal/vertical ink runs. Works best for high-contrast sheets like white glyphs on black.
+  const w=img.naturalWidth,h=img.naturalHeight;
+  const off=document.createElement('canvas');off.width=w;off.height=h;
+  const c=off.getContext('2d');c.drawImage(img,0,0);const d=c.getImageData(0,0,w,h).data;
+  const row=new Uint8Array(h), col=new Uint8Array(w);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const k=(y*w+x)*4,a=d[k+3],r=d[k],g=d[k+1],b=d[k+2];
+    if(a>20 && (r+g+b)/3>40){row[y]=1;col[x]=1}
+  }
+  const ranges=(arr)=>{
+    let out=[],s=-1;
+    for(let i=0;i<arr.length;i++){if(arr[i]&&!arr[i-1])s=i;if(!arr[i]&&arr[i-1])out.push([s,i-1])}
+    if(arr[arr.length-1])out.push([s,arr.length-1]);return out;
+  };
+  const rs=ranges(row);
+  let found=[];
+  for(const [y1,y2] of rs){
+    let xRanges=ranges(col);
+    // Restrict columns to this row, recompute x occupancy for row band.
+    const rr=new Uint8Array(w);
+    for(let y=y1;y<=y2;y++)for(let x=0;x<w;x++){
+      const k=(y*w+x)*4;
+      if(d[k+3]>20&&(d[k]+d[k+1]+d[k+2])/3>40)rr[x]=1;
+    }
+    for(const [x1,x2] of ranges(rr))found.push({x:x1,y:y1,w:x2-x1+1,h:y2-y1+1});
+  }
+  undoStack.push(JSON.stringify(boxes));boxes=found;applyMap(false);redraw();
+  status(`Auto-detected ${boxes.length} connected regions. Review/adjust them; punctuation or dotted letters may need manual boxes.`);
+}
+$('auto').onclick=autoDetect;
+
+$('fnt').onchange=async e=>{
+  const f=e.target.files[0];if(!f)return;
+  oldFnt=await f.text();status(`Loaded existing FNT: ${f.name}. Existing kerning data will be retained.`);
+};
+
+function parseKernings(){
+  const out=[];
+  if(!oldFnt)return out;
+  for(const line of oldFnt.split(/\r?\n/)){
+    const m=line.match(/^kerning\\s+first=(\\d+)\\s+second=(\\d+)\\s+amount=(-?\\d+)/);
+    if(m)out.push({a:+m[1],b:+m[2],v:+m[3]});
+  }
+  return out;
+}
+function clamp(n,a,b){return Math.max(a,Math.min(b,n))}
+function makeAtlas(){
+  if(!img||!boxes.length)throw Error('Load a PNG and create at least one glyph box.');
+  const W=+$('outW').value,H=+$('outH').value;
+  const out=document.createElement('canvas');out.width=W;out.height=H;
+  const c=out.getContext('2d');
+  // Transparent atlas, matching normal bitmap-font usage.
+  let x=0,y=0,rowH=0, placed=[];
+  const pad=1;
+  for(const b of boxes){
+    if(x+b.w+pad>W){x=0;y+=rowH+pad;rowH=0}
+    if(y+b.h>H)throw Error(`Atlas ${W}×${H} is too small.`);
+    c.drawImage(img,b.x,b.y,b.w,b.h,x,y,b.w,b.h);
+    placed.push({...b,ax:x,ay:y});
+    x+=b.w+pad;rowH=Math.max(rowH,b.h);
+  }
+  return {canvas:out,placed};
+}
+function fntText(placed){
+  const face=$('face').value||'Pusab',size=+$('size').value||64,line=+$('lineHeight').value||67,base=+$('base').value||39;
+  const pad=$('padding').value||'0,0,0,0';
+  const W=+$('outW').value,H=+$('outH').value;
+  let chars=placed.filter(b=>b.ch&&b.ch!=='?');
+  let s=`info face="${face}" size=${size} bold=0 italic=0 charset="" unicode=0 stretchH=100 smooth=1 aa=1 padding=${pad} spacing=1,1\n`;
+  s+=`common lineHeight=${line} base=${base} scaleW=${W} scaleH=${H} pages=1 packed=0\n`;
+  s+=`page id=0 file="bigFont-hd.png"\n`;
+  s+=`chars count=${chars.length}\n`;
+  for(const b of chars){
+    const cp=b.ch.codePointAt(0);
+    // Preserve the original BMFont convention; xoffset/yoffset are zero here.
+    // xadvance is the glyph width by default and can be edited later if needed.
+    s+=`char id=${cp} x=${b.ax} y=${b.ay} width=${b.w} height=${b.h} xoffset=0 yoffset=0 xadvance=${b.w} page=0 chnl=0 letter="${bmQuote(b.ch)}"\n`;
+  }
+  const ks=parseKernings();
+  s+=`kernings count=${ks.length}\n`;
+  for(const k of ks)s+=`kerning first=${k.a} second=${k.b} amount=${k.v}\n`;
+  return s;
+}
+function bmQuote(ch){return ch==='\\'?'\\\\':ch==='"'?'&quot;':ch}
+function download(name,blob){
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;document.body.appendChild(a);a.click();a.remove();
+}
+$('generate').onclick=async()=>{
+  try{
+    applyMap(false);
+    const {canvas,placed}=makeAtlas();
+    const txt=fntText(placed);
+    canvas.toBlob(blob=>{
+      download('bigFont-hd.png',blob);
+      setTimeout(()=>download('bigFont-hd.fnt',new Blob([txt],{type:'text/plain;charset=utf-8'})),300);
+    },'image/png');
+    status(`Generated ${placed.length} glyphs.\nDownloaded bigFont-hd.png and bigFont-hd.fnt.`);
+  }catch(e){status('Error: '+e.message)}
+};
+window.addEventListener('resize',()=>{if(img)fit()});
+</script>
+</body>
+</html>
